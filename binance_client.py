@@ -170,7 +170,8 @@ class BinanceClient:
             }
             response = self.session.get(url, params={'symbol': symbol}, headers=headers, timeout=10)
             if response.status_code == 451:
-                logger.warning("Open interest endpoint blocked with 451. Disabling OI fetches for this run.")
+                # Downgrade to debug to avoid noisy logs on serverless hosts
+                logger.debug("Open interest endpoint blocked with 451. Disabling OI fetches for this run.")
                 self.oi_fetch_disabled = True
                 return None
             response.raise_for_status()

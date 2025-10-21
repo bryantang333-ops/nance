@@ -173,7 +173,7 @@ class Dashboard:
                 diags = self.binance_client.diagnostics()
                 st.sidebar.json(diags)
                 if diags.get('oi_fetch_disabled'):
-                    st.sidebar.warning("Open Interest requests are disabled due to 451 blocking.")
+                    st.sidebar.info("Open Interest temporarily disabled (451). Price & Volume alerts continue.")
             except Exception as e:
                 st.sidebar.error(f"Diagnostics failed: {e}")
     
