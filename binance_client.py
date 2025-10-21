@@ -32,26 +32,45 @@ class BinanceClient:
         self.reconnect_attempts = {}
         
     def get_usdt_futures_symbols(self) -> List[str]:
-        """Get all USDT perpetual futures symbols"""
-        try:
-            self.rate_limiter.wait()
-            response = self.session.get(f"{BINANCE_BASE_URL}/fapi/v1/exchangeInfo")
-            response.raise_for_status()
-            
-            data = response.json()
-            symbols = []
-            for symbol_info in data['symbols']:
-                if (symbol_info['status'] == 'TRADING' and 
-                    symbol_info['quoteAsset'] == 'USDT' and 
-                    symbol_info['contractType'] == 'PERPETUAL'):
-                    symbols.append(symbol_info['symbol'])
-            
-            logger.info(f"Found {len(symbols)} USDT perpetual futures symbols")
-            return symbols
-            
-        except Exception as e:
-            logger.error(f"Error fetching symbols: {e}")
-            return []
+        """Get all USDT perpetual futures symbols with retries and safe fallback."""
+        # Conservative fallback list so app can start even if REST call fails
+        fallback_symbols = [
+            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+            "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT"
+        ]
+
+        # Try a few times with short timeouts (common on serverless platforms)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.rate_limiter.wait()
+                response = self.session.get(
+                    f"{BINANCE_BASE_URL}/fapi/v1/exchangeInfo",
+                    timeout=10
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                symbols = []
+                for symbol_info in data.get('symbols', []):
+                    if (
+                        symbol_info.get('status') == 'TRADING' and
+                        symbol_info.get('quoteAsset') == 'USDT' and
+                        symbol_info.get('contractType') == 'PERPETUAL'
+                    ):
+                        symbols.append(symbol_info['symbol'])
+
+                if symbols:
+                    logger.info(f"Found {len(symbols)} USDT perpetual futures symbols")
+                    return symbols
+                else:
+                    logger.warning("ExchangeInfo returned no symbols; retrying...")
+            except Exception as e:
+                logger.warning(f"Attempt {attempt}/{max_retries} to fetch symbols failed: {e}")
+                time.sleep(2 * attempt)
+
+        logger.error("Falling back to a small default symbol list due to repeated failures")
+        return fallback_symbols
     
     def get_24h_ticker(self, symbol: str) -> Optional[Dict]:
         """Get 24h ticker statistics for a symbol"""
