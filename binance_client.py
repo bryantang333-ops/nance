@@ -37,8 +37,11 @@ class BinanceClient:
         """Get all USDT perpetual futures symbols with retries and safe fallback."""
         # Conservative fallback list so app can start even if REST call fails
         fallback_symbols = [
+            # USDⓈ-M (USDT margined)
             "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-            "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT"
+            "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT",
+            # COIN-M (coin margined) - popular pairs
+            "BTCUSD_PERP", "ETHUSD_PERP", "BNBUSD_PERP", "ADAUSD_PERP", "XRPUSD_PERP"
         ]
 
         # Try a few times with short timeouts (common on serverless platforms)
@@ -46,10 +49,24 @@ class BinanceClient:
         for attempt in range(1, max_retries + 1):
             try:
                 self.rate_limiter.wait()
+                
+                # Add headers to avoid some blocking
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+                
                 response = self.session.get(
                     f"{BINANCE_BASE_URL}/fapi/v1/exchangeInfo",
-                    timeout=10
+                    headers=headers,
+                    timeout=15
                 )
+                
+                if response.status_code == 451:
+                    logger.warning(f"Binance API blocked (451) - likely geographic restriction")
+                    break
+                    
                 response.raise_for_status()
 
                 data = response.json()
@@ -69,6 +86,9 @@ class BinanceClient:
                     logger.warning("ExchangeInfo returned no symbols; retrying...")
             except Exception as e:
                 logger.warning(f"Attempt {attempt}/{max_retries} to fetch symbols failed: {e}")
+                if "451" in str(e) or "blocked" in str(e).lower():
+                    logger.error("Binance API is blocked - using fallback symbols only")
+                    break
                 time.sleep(2 * attempt)
 
         logger.error("Falling back to a small default symbol list due to repeated failures")
@@ -80,10 +100,24 @@ class BinanceClient:
         for attempt in range(1, max_retries + 1):
             try:
                 self.rate_limiter.wait()
+                
+                # Add headers to avoid some blocking
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+                
                 response = self.session.get(
                     f"{BINANCE_COIN_BASE_URL}/dapi/v1/exchangeInfo",
-                    timeout=10
+                    headers=headers,
+                    timeout=15
                 )
+                
+                if response.status_code == 451:
+                    logger.warning(f"Binance COIN-M API blocked (451) - likely geographic restriction")
+                    break
+                    
                 response.raise_for_status()
                 data = response.json()
                 symbols: List[str] = []
@@ -95,6 +129,9 @@ class BinanceClient:
                     return symbols
             except Exception as e:
                 logger.warning(f"Attempt {attempt}/{max_retries} to fetch COIN-M symbols failed: {e}")
+                if "451" in str(e) or "blocked" in str(e).lower():
+                    logger.error("Binance COIN-M API is blocked - skipping COIN-M symbols")
+                    break
                 time.sleep(2 * attempt)
         return []
     
