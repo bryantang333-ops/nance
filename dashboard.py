@@ -561,26 +561,9 @@ class Dashboard:
                         self.thread_safe_alerts = []
                     self.thread_safe_alerts.append(alert)
                 
-                # Get open interest (this requires a separate API call)
-                # Only try OI for USDT pairs to avoid errors with USD pairs
-                if sym.endswith('USDT'):
-                    try:
-                        oi_data = self.binance_client.get_open_interest(sym)
-                        if oi_data and 'openInterest' in oi_data:
-                            oi = float(oi_data.get('openInterest', 0))
-                            self.thread_safe_data[sym]['open_interest'] = oi
-                            
-                            alert = self.anomaly_detector.add_oi_data(sym, oi)
-                            if alert:
-                                if not hasattr(self, 'thread_safe_alerts'):
-                                    self.thread_safe_alerts = []
-                                self.thread_safe_alerts.append(alert)
-                    except Exception as e:
-                        # Avoid noisy logs on serverless when blocked
-                        self.thread_safe_data[sym]['open_interest'] = 0
-                else:
-                    # For non-USDT pairs, set OI to 0
-                    self.thread_safe_data[sym]['open_interest'] = 0
+                # Open Interest disabled to avoid 451 blocking errors
+                # Bot runs with Price and Volume monitoring only
+                self.thread_safe_data[sym]['open_interest'] = 0
                     
             except Exception as e:
                 logger.error(f"Error in websocket callback for {sym}: {e}")
