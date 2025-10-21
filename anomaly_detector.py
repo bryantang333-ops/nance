@@ -1,333 +1,283 @@
 """
-Anomaly detection algorithms for price, volume, and open interest
+Binance API client for fetching market data and managing WebSocket connections
 """
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
-import logging
 import asyncio
+import json
+import time
+import websocket
+import threading
+from typing import Dict, List, Callable, Optional
+import requests
+from datetime import datetime, timedelta
+import logging
 
 from config import (
-    PRICE_SPIKE_THRESHOLD, VOLUME_SPIKE_THRESHOLD, OI_CHANGE_THRESHOLD,
-    PRICE_WINDOW, VOLUME_WINDOW, OI_WINDOW, TELEGRAM_ENABLED
+    BINANCE_BASE_URL, BINANCE_WS_URL,
+    BINANCE_COIN_BASE_URL, BINANCE_WS_URL_COIN,
+    MAX_REQUESTS_PER_MINUTE,
+    REQUEST_DELAY, WS_RECONNECT_DELAY, WS_MAX_RECONNECT_ATTEMPTS,
+    WS_PING_INTERVAL, WS_PING_TIMEOUT
 )
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@dataclass
-class AnomalyAlert:
-    """Data class for anomaly alerts"""
-    symbol: str
-    alert_type: str  # 'price_spike', 'volume_spike', 'oi_change'
-    severity: str    # 'low', 'medium', 'high', 'extreme'
-    value: float
-    threshold: float
-    percentage_change: float
-    timestamp: datetime
-    description: str
-
-class AnomalyDetector:
-    """Detects anomalies in price, volume, and open interest data"""
+class BinanceClient:
+    """Binance API client with rate limiting and WebSocket management"""
     
     def __init__(self):
-        self.price_history = {}  # symbol -> list of (timestamp, price)
-        self.volume_history = {}  # symbol -> list of (timestamp, volume)
-        self.oi_history = {}     # symbol -> list of (timestamp, oi)
-        self.alerts = []         # list of AnomalyAlert objects
+        self.session = requests.Session()
+        self.rate_limiter = RateLimiter(MAX_REQUESTS_PER_MINUTE)
+        self.ws_connections = {}
+        self.ws_callbacks = {}
+        self.reconnect_attempts = {}
         
-        # Import telegram notifier only if enabled
-        if TELEGRAM_ENABLED:
+    def get_usdt_futures_symbols(self) -> List[str]:
+        """Get all USDT perpetual futures symbols with retries and safe fallback."""
+        # Conservative fallback list so app can start even if REST call fails
+        fallback_symbols = [
+            # USDⓈ-M (USDT margined)
+            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+            "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT",
+            # COIN-M (coin margined) - popular pairs
+            "BTCUSD_PERP", "ETHUSD_PERP", "BNBUSD_PERP", "ADAUSD_PERP", "XRPUSD_PERP"
+        ]
+
+        # Try a few times with short timeouts (common on serverless platforms)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
             try:
-                from telegram_notifier import telegram_notifier
-                self.telegram_notifier = telegram_notifier
-            except ImportError:
-                logger.warning("Telegram notifier not available")
-                self.telegram_notifier = None
-        else:
-            self.telegram_notifier = None
-        
-    def add_price_data(self, symbol: str, price: float, timestamp: datetime = None):
-        """Add price data and check for anomalies"""
-        if timestamp is None:
-            timestamp = datetime.now()
-        
-        if symbol not in self.price_history:
-            self.price_history[symbol] = []
-        
-        self.price_history[symbol].append((timestamp, price))
-        
-        # Keep only recent data (last 2 hours)
-        cutoff_time = timestamp - timedelta(hours=2)
-        self.price_history[symbol] = [
-            (ts, p) for ts, p in self.price_history[symbol] 
-            if ts > cutoff_time
-        ]
-        
-        # Check for price spike
-        alert = self._detect_price_spike(symbol, price, timestamp)
-        if alert:
-            self.alerts.append(alert)
-            self._send_telegram_alert(alert)
-            return alert
-        
-        return None
-    
-    def add_volume_data(self, symbol: str, volume: float, timestamp: datetime = None):
-        """Add volume data and check for anomalies"""
-        if timestamp is None:
-            timestamp = datetime.now()
-        
-        if symbol not in self.volume_history:
-            self.volume_history[symbol] = []
-        
-        self.volume_history[symbol].append((timestamp, volume))
-        
-        # Keep only recent data (last 2 hours)
-        cutoff_time = timestamp - timedelta(hours=2)
-        self.volume_history[symbol] = [
-            (ts, v) for ts, v in self.volume_history[symbol] 
-            if ts > cutoff_time
-        ]
-        
-        # Check for volume spike
-        alert = self._detect_volume_spike(symbol, volume, timestamp)
-        if alert:
-            self.alerts.append(alert)
-            self._send_telegram_alert(alert)
-            return alert
-        
-        return None
-    
-    def add_oi_data(self, symbol: str, oi: float, timestamp: datetime = None):
-        """Add open interest data and check for anomalies"""
-        if timestamp is None:
-            timestamp = datetime.now()
-        
-        if symbol not in self.oi_history:
-            self.oi_history[symbol] = []
-        
-        self.oi_history[symbol].append((timestamp, oi))
-        
-        # Keep only recent data (last 2 hours)
-        cutoff_time = timestamp - timedelta(hours=2)
-        self.oi_history[symbol] = [
-            (ts, o) for ts, o in self.oi_history[symbol] 
-            if ts > cutoff_time
-        ]
-        
-        # Check for OI change
-        alert = self._detect_oi_change(symbol, oi, timestamp)
-        if alert:
-            self.alerts.append(alert)
-            self._send_telegram_alert(alert)
-            return alert
-        
-        return None
-    
-    def _detect_price_spike(self, symbol: str, current_price: float, timestamp: datetime) -> Optional[AnomalyAlert]:
-        """Detect price spikes in the last 5 minutes"""
-        if symbol not in self.price_history or len(self.price_history[symbol]) < 2:
-            return None
-        
-        # Get prices from the last 5 minutes
-        cutoff_time = timestamp - timedelta(minutes=PRICE_WINDOW)
-        recent_prices = [
-            price for ts, price in self.price_history[symbol]
-            if ts >= cutoff_time and ts < timestamp
-        ]
-        
-        if not recent_prices:
-            return None
-        
-        # Calculate percentage change from the earliest price in the window
-        earliest_price = recent_prices[0]
-        price_change = (current_price - earliest_price) / earliest_price
-        
-        if abs(price_change) >= PRICE_SPIKE_THRESHOLD:
-            severity = self._get_severity(abs(price_change), PRICE_SPIKE_THRESHOLD)
-            direction = "up" if price_change > 0 else "down"
-            
-            return AnomalyAlert(
-                symbol=symbol,
-                alert_type="price_spike",
-                severity=severity,
-                value=current_price,
-                threshold=PRICE_SPIKE_THRESHOLD,
-                percentage_change=price_change * 100,
-                timestamp=timestamp,
-                description=f"Price {direction} {abs(price_change)*100:.2f}% in {PRICE_WINDOW} minutes"
-            )
-        
-        return None
-    
-    def _detect_volume_spike(self, symbol: str, current_volume: float, timestamp: datetime) -> Optional[AnomalyAlert]:
-        """Detect volume spikes compared to 1-hour average"""
-        if symbol not in self.volume_history or len(self.volume_history[symbol]) < 10:
-            return None
-        
-        # Get volumes from the last hour
-        cutoff_time = timestamp - timedelta(minutes=VOLUME_WINDOW)
-        recent_volumes = [
-            volume for ts, volume in self.volume_history[symbol]
-            if ts >= cutoff_time and ts < timestamp
-        ]
-        
-        if len(recent_volumes) < 5:  # Need at least 5 data points
-            return None
-        
-        # Calculate average volume
-        avg_volume = np.mean(recent_volumes)
-        
-        if avg_volume == 0:
-            return None
-        
-        volume_ratio = current_volume / avg_volume
-        
-        if volume_ratio >= VOLUME_SPIKE_THRESHOLD:
-            severity = self._get_severity(volume_ratio, VOLUME_SPIKE_THRESHOLD)
-            
-            return AnomalyAlert(
-                symbol=symbol,
-                alert_type="volume_spike",
-                severity=severity,
-                value=current_volume,
-                threshold=VOLUME_SPIKE_THRESHOLD,
-                percentage_change=(volume_ratio - 1) * 100,
-                timestamp=timestamp,
-                description=f"Volume {volume_ratio:.1f}x above 1-hour average"
-            )
-        
-        return None
-    
-    def _detect_oi_change(self, symbol: str, current_oi: float, timestamp: datetime) -> Optional[AnomalyAlert]:
-        """Detect significant open interest changes in the last 10 minutes"""
-        if symbol not in self.oi_history or len(self.oi_history[symbol]) < 2:
-            return None
-        
-        # Get OI from the last 10 minutes
-        cutoff_time = timestamp - timedelta(minutes=OI_WINDOW)
-        recent_oi = [
-            oi for ts, oi in self.oi_history[symbol]
-            if ts >= cutoff_time and ts < timestamp
-        ]
-        
-        if not recent_oi:
-            return None
-        
-        # Calculate percentage change from the earliest OI in the window
-        earliest_oi = recent_oi[0]
-        if earliest_oi == 0:
-            return None
-        
-        oi_change = (current_oi - earliest_oi) / earliest_oi
-        
-        if abs(oi_change) >= OI_CHANGE_THRESHOLD:
-            severity = self._get_severity(abs(oi_change), OI_CHANGE_THRESHOLD)
-            direction = "up" if oi_change > 0 else "down"
-            
-            return AnomalyAlert(
-                symbol=symbol,
-                alert_type="oi_change",
-                severity=severity,
-                value=current_oi,
-                threshold=OI_CHANGE_THRESHOLD,
-                percentage_change=oi_change * 100,
-                timestamp=timestamp,
-                description=f"Open Interest {direction} {abs(oi_change)*100:.2f}% in {OI_WINDOW} minutes"
-            )
-        
-        return None
-    
-    def _get_severity(self, change: float, threshold: float) -> str:
-        """Determine severity based on how much the change exceeds the threshold"""
-        ratio = change / threshold
-        
-        if ratio >= 5.0:
-            return "extreme"
-        elif ratio >= 3.0:
-            return "high"
-        elif ratio >= 2.0:
-            return "medium"
-        else:
-            return "low"
-    
-    def get_recent_alerts(self, minutes: int = 60) -> List[AnomalyAlert]:
-        """Get alerts from the last N minutes"""
-        cutoff_time = datetime.now() - timedelta(minutes=minutes)
-        return [
-            alert for alert in self.alerts
-            if alert.timestamp >= cutoff_time
-        ]
-    
-    def get_alerts_by_severity(self, severity: str) -> List[AnomalyAlert]:
-        """Get alerts by severity level"""
-        return [alert for alert in self.alerts if alert.severity == severity]
-    
-    def clear_old_alerts(self, hours: int = 24):
-        """Clear alerts older than N hours"""
-        cutoff_time = datetime.now() - timedelta(hours=hours)
-        self.alerts = [
-            alert for alert in self.alerts
-            if alert.timestamp >= cutoff_time
-        ]
-    
-    def get_market_summary(self) -> Dict:
-        """Get summary statistics for all monitored symbols"""
-        summary = {
-            'total_symbols': len(set(
-                list(self.price_history.keys()) + 
-                list(self.volume_history.keys()) + 
-                list(self.oi_history.keys())
-            )),
-            'price_data_points': sum(len(data) for data in self.price_history.values()),
-            'volume_data_points': sum(len(data) for data in self.volume_history.values()),
-            'oi_data_points': sum(len(data) for data in self.oi_history.values()),
-            'total_alerts': len(self.alerts),
-            'recent_alerts': len(self.get_recent_alerts(60)),
-            'extreme_alerts': len(self.get_alerts_by_severity('extreme')),
-            'high_alerts': len(self.get_alerts_by_severity('high'))
-        }
-        return summary
-    
-    def _send_telegram_alert(self, alert: AnomalyAlert):
-        """Send alert to Telegram if configured"""
-        if self.telegram_notifier and self.telegram_notifier.is_configured():
-            try:
-                # Run the async function in a new event loop or existing one
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If loop is already running, schedule the coroutine
-                    asyncio.create_task(self.telegram_notifier.send_alert(alert))
+                self.rate_limiter.wait()
+                
+                # Add headers to avoid some blocking
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+                
+                response = self.session.get(
+                    f"{BINANCE_BASE_URL}/fapi/v1/exchangeInfo",
+                    headers=headers,
+                    timeout=15
+                )
+                
+                if response.status_code == 451:
+                    logger.warning(f"Binance API blocked (451) - likely geographic restriction")
+                    break
+                    
+                response.raise_for_status()
+
+                data = response.json()
+                symbols = []
+                for symbol_info in data.get('symbols', []):
+                    if (
+                        symbol_info.get('status') == 'TRADING' and
+                        symbol_info.get('quoteAsset') == 'USDT' and
+                        symbol_info.get('contractType') == 'PERPETUAL'
+                    ):
+                        symbols.append(symbol_info['symbol'])
+
+                if symbols:
+                    logger.info(f"Found {len(symbols)} USDT perpetual futures symbols")
+                    return symbols
                 else:
-                    # If no loop is running, run it
-                    loop.run_until_complete(self.telegram_notifier.send_alert(alert))
+                    logger.warning("ExchangeInfo returned no symbols; retrying...")
             except Exception as e:
-                logger.error(f"Failed to send Telegram alert: {e}")
-    
-    async def send_startup_notification(self):
-        """Send startup notification to Telegram"""
-        if self.telegram_notifier and self.telegram_notifier.is_configured():
+                logger.warning(f"Attempt {attempt}/{max_retries} to fetch symbols failed: {e}")
+                if "451" in str(e) or "blocked" in str(e).lower():
+                    logger.error("Binance API is blocked - using fallback symbols only")
+                    break
+                time.sleep(2 * attempt)
+
+        logger.error("Falling back to a small default symbol list due to repeated failures")
+        return fallback_symbols
+
+    def get_coinm_futures_symbols(self) -> List[str]:
+        """Get all COIN-M perpetual futures symbols (e.g., BTCUSD_PERP)."""
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
             try:
-                await self.telegram_notifier.send_startup_message()
+                self.rate_limiter.wait()
+                
+                # Add headers to avoid some blocking
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+                
+                response = self.session.get(
+                    f"{BINANCE_COIN_BASE_URL}/dapi/v1/exchangeInfo",
+                    headers=headers,
+                    timeout=15
+                )
+                
+                if response.status_code == 451:
+                    logger.warning(f"Binance COIN-M API blocked (451) - likely geographic restriction")
+                    break
+                    
+                response.raise_for_status()
+                data = response.json()
+                symbols: List[str] = []
+                for s in data.get('symbols', []):
+                    if s.get('status') == 'TRADING' and s.get('contractType') == 'PERPETUAL':
+                        symbols.append(s['symbol'])  # e.g., BTCUSD_PERP
+                if symbols:
+                    logger.info(f"Found {len(symbols)} COIN-M perpetual futures symbols")
+                    return symbols
             except Exception as e:
-                logger.error(f"Failed to send startup notification: {e}")
+                logger.warning(f"Attempt {attempt}/{max_retries} to fetch COIN-M symbols failed: {e}")
+                if "451" in str(e) or "blocked" in str(e).lower():
+                    logger.error("Binance COIN-M API is blocked - skipping COIN-M symbols")
+                    break
+                time.sleep(2 * attempt)
+        return []
     
-    async def send_shutdown_notification(self):
-        """Send shutdown notification to Telegram"""
-        if self.telegram_notifier and self.telegram_notifier.is_configured():
-            try:
-                await self.telegram_notifier.send_shutdown_message()
-            except Exception as e:
-                logger.error(f"Failed to send shutdown notification: {e}")
+    def get_24h_ticker(self, symbol: str) -> Optional[Dict]:
+        """Get 24h ticker statistics for a symbol"""
+        try:
+            self.rate_limiter.wait()
+            response = self.session.get(f"{BINANCE_BASE_URL}/fapi/v1/ticker/24hr", 
+                                      params={'symbol': symbol})
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error fetching 24h ticker for {symbol}: {e}")
+            return None
+
+    def diagnostics(self) -> Dict:
+        """Return quick diagnostics useful for serverless debugging."""
+        diags = {}
+        try:
+            resp = self.session.get(f"{BINANCE_BASE_URL}/fapi/v1/ping", timeout=5)
+            diags['fapi_ping_status'] = resp.status_code
+        except Exception as e:
+            diags['fapi_ping_status'] = str(e)
+        try:
+            resp = self.session.get(f"{BINANCE_COIN_BASE_URL}/dapi/v1/ping", timeout=5)
+            diags['dapi_ping_status'] = resp.status_code
+        except Exception as e:
+            diags['dapi_ping_status'] = str(e)
+        return diags
     
-    async def send_test_notification(self):
-        """Send test notification to Telegram"""
-        if self.telegram_notifier and self.telegram_notifier.is_configured():
+    def start_websocket(self, symbol: str, callback: Callable):
+        """Start WebSocket connection for a symbol (handles both markets)."""
+        if symbol in self.ws_connections:
+            logger.warning(f"WebSocket already exists for {symbol}")
+            return
+        
+        # USDⓈ-M vs COIN-M stream base
+        if symbol.endswith('USDT') or symbol.endswith('USDC'):
+            ws_base = BINANCE_WS_URL
+        else:
+            ws_base = BINANCE_WS_URL_COIN
+        stream_name = f"{symbol.lower()}@ticker"
+        ws_url = f"{ws_base}{stream_name}"
+        
+        self.ws_callbacks[symbol] = callback
+        self.reconnect_attempts[symbol] = 0
+        
+        def on_message(ws, message):
             try:
-                return await self.telegram_notifier.send_test_message()
+                data = json.loads(message)
+                callback(symbol, data)
             except Exception as e:
-                logger.error(f"Failed to send test notification: {e}")
-                return False
-        return False
+                logger.error(f"Error processing WebSocket message for {symbol}: {e}")
+        
+        def on_error(ws, error):
+            logger.error(f"WebSocket error for {symbol}: {error}")
+        
+        def on_close(ws, close_status_code, close_msg):
+            logger.warning(f"WebSocket closed for {symbol}: {close_status_code} - {close_msg}")
+            self._reconnect_websocket(symbol, callback)
+        
+        def on_open(ws):
+            logger.info(f"WebSocket connected for {symbol}")
+            self.reconnect_attempts[symbol] = 0
+        
+        ws = websocket.WebSocketApp(
+            ws_url,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+            on_open=on_open
+        )
+        
+        self.ws_connections[symbol] = ws
+        
+        # Start WebSocket in a separate thread
+        def run_ws():
+            ws.run_forever(
+                ping_interval=WS_PING_INTERVAL,
+                ping_timeout=WS_PING_TIMEOUT
+            )
+        
+        thread = threading.Thread(target=run_ws, daemon=True)
+        thread.start()
+    
+    def _reconnect_websocket(self, symbol: str, callback: Callable):
+        """Reconnect WebSocket with exponential backoff"""
+        if symbol not in self.reconnect_attempts:
+            return
+        
+        attempts = self.reconnect_attempts[symbol]
+        if attempts >= WS_MAX_RECONNECT_ATTEMPTS:
+            logger.error(f"Max reconnection attempts reached for {symbol}")
+            return
+        
+        self.reconnect_attempts[symbol] += 1
+        delay = WS_RECONNECT_DELAY * (2 ** attempts)
+        
+        logger.info(f"Reconnecting {symbol} in {delay} seconds (attempt {attempts + 1})")
+        
+        def delayed_reconnect():
+            time.sleep(delay)
+            if symbol in self.ws_connections:
+                del self.ws_connections[symbol]
+            self.start_websocket(symbol, callback)
+        
+        thread = threading.Thread(target=delayed_reconnect, daemon=True)
+        thread.start()
+    
+    def stop_websocket(self, symbol: str):
+        """Stop WebSocket connection for a symbol"""
+        if symbol in self.ws_connections:
+            self.ws_connections[symbol].close()
+            del self.ws_connections[symbol]
+            del self.ws_callbacks[symbol]
+            if symbol in self.reconnect_attempts:
+                del self.reconnect_attempts[symbol]
+    
+    def stop_all_websockets(self):
+        """Stop all WebSocket connections"""
+        for symbol in list(self.ws_connections.keys()):
+            self.stop_websocket(symbol)
+
+
+class RateLimiter:
+    """Rate limiter for API requests"""
+    
+    def __init__(self, max_requests_per_minute: int):
+        self.max_requests = max_requests_per_minute
+        self.requests = []
+        self.lock = threading.Lock()
+    
+    def wait(self):
+        """Wait if necessary to respect rate limits"""
+        with self.lock:
+            now = time.time()
+            # Remove requests older than 1 minute
+            self.requests = [req_time for req_time in self.requests if now - req_time < 60]
+            
+            if len(self.requests) >= self.max_requests:
+                sleep_time = 60 - (now - self.requests[0])
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                    # Clean up old requests after sleeping
+                    now = time.time()
+                    self.requests = [req_time for req_time in self.requests if now - req_time < 60]
+            
+            self.requests.append(now)
+            time.sleep(REQUEST_DELAY)
