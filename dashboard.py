@@ -197,6 +197,9 @@ class Dashboard:
     
     def _render_main_content(self):
         """Render main dashboard content"""
+        # Sync thread-safe data to session state
+        self._sync_thread_safe_data()
+        
         # Auto-refresh
         if st.session_state.get('auto_refresh', True):
             time.sleep(st.session_state.get('refresh_interval', REFRESH_INTERVAL))
@@ -506,42 +509,57 @@ class Dashboard:
     def _start_symbol_monitoring(self, symbol: str):
         """Start monitoring a specific symbol"""
         def websocket_callback(sym, data):
-            # Process WebSocket data
-            price = float(data.get('c', 0))  # current price
-            volume = float(data.get('v', 0))  # volume
-            price_change_24h = float(data.get('P', 0))  # 24h price change %
-            
-            # Update market data
-            if sym not in st.session_state.market_data:
-                st.session_state.market_data[sym] = {}
-            
-            st.session_state.market_data[sym].update({
-                'price': price,
-                'volume': volume,
-                'price_change_24h': price_change_24h,
-                'high_24h': float(data.get('h', 0)),
-                'low_24h': float(data.get('l', 0)),
-                'last_update': datetime.now()
-            })
-            
-            # Check for anomalies
-            alert = self.anomaly_detector.add_price_data(sym, price)
-            if alert:
-                st.session_state.alerts.append(alert)
-            
-            alert = self.anomaly_detector.add_volume_data(sym, volume)
-            if alert:
-                st.session_state.alerts.append(alert)
-            
-            # Get open interest (this requires a separate API call)
-            oi_data = self.binance_client.get_open_interest(sym)
-            if oi_data:
-                oi = float(oi_data.get('openInterest', 0))
-                st.session_state.market_data[sym]['open_interest'] = oi
+            try:
+                # Process WebSocket data
+                price = float(data.get('c', 0))  # current price
+                volume = float(data.get('v', 0))  # volume
+                price_change_24h = float(data.get('P', 0))  # 24h price change %
                 
-                alert = self.anomaly_detector.add_oi_data(sym, oi)
+                # Store data in thread-safe way (don't access st.session_state from threads)
+                market_data = {
+                    'price': price,
+                    'volume': volume,
+                    'price_change_24h': price_change_24h,
+                    'high_24h': float(data.get('h', 0)),
+                    'low_24h': float(data.get('l', 0)),
+                    'last_update': datetime.now()
+                }
+                
+                # Store in a thread-safe data store
+                if not hasattr(self, 'thread_safe_data'):
+                    self.thread_safe_data = {}
+                self.thread_safe_data[sym] = market_data
+                
+                # Check for anomalies (this is thread-safe)
+                alert = self.anomaly_detector.add_price_data(sym, price)
                 if alert:
-                    st.session_state.alerts.append(alert)
+                    if not hasattr(self, 'thread_safe_alerts'):
+                        self.thread_safe_alerts = []
+                    self.thread_safe_alerts.append(alert)
+                
+                alert = self.anomaly_detector.add_volume_data(sym, volume)
+                if alert:
+                    if not hasattr(self, 'thread_safe_alerts'):
+                        self.thread_safe_alerts = []
+                    self.thread_safe_alerts.append(alert)
+                
+                # Get open interest (this requires a separate API call)
+                try:
+                    oi_data = self.binance_client.get_open_interest(sym)
+                    if oi_data:
+                        oi = float(oi_data.get('openInterest', 0))
+                        self.thread_safe_data[sym]['open_interest'] = oi
+                        
+                        alert = self.anomaly_detector.add_oi_data(sym, oi)
+                        if alert:
+                            if not hasattr(self, 'thread_safe_alerts'):
+                                self.thread_safe_alerts = []
+                            self.thread_safe_alerts.append(alert)
+                except Exception as e:
+                    logger.warning(f"Failed to get OI for {sym}: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Error in websocket callback for {sym}: {e}")
         
         # Start WebSocket
         self.binance_client.start_websocket(symbol, websocket_callback)
@@ -569,6 +587,22 @@ class Dashboard:
         
         st.session_state.market_data = sample_data
         st.success("Sample data loaded!")
+    
+    def _sync_thread_safe_data(self):
+        """Sync thread-safe data to session state"""
+        # Sync market data
+        if hasattr(self, 'thread_safe_data') and self.thread_safe_data:
+            st.session_state.market_data.update(self.thread_safe_data)
+            st.session_state.last_update = datetime.now()
+        
+        # Sync alerts
+        if hasattr(self, 'thread_safe_alerts') and self.thread_safe_alerts:
+            # Add new alerts to session state
+            for alert in self.thread_safe_alerts:
+                if alert not in st.session_state.alerts:
+                    st.session_state.alerts.append(alert)
+            # Clear processed alerts
+            self.thread_safe_alerts = []
 
 def main():
     """Main function to run the dashboard"""
