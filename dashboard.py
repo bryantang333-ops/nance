@@ -549,13 +549,16 @@ class Dashboard:
                 self.thread_safe_data[sym] = market_data
                 
                 # Check for anomalies (this is thread-safe)
-                alert = self.anomaly_detector.add_price_data(sym, price)
+                # Get 24h volume for volume threshold filtering
+                volume_24h = volume * 24  # Approximate 24h volume from current volume
+                
+                alert = self.anomaly_detector.add_price_data(sym, price, timestamp=datetime.now(), volume_24h=volume_24h)
                 if alert:
                     if not hasattr(self, 'thread_safe_alerts'):
                         self.thread_safe_alerts = []
                     self.thread_safe_alerts.append(alert)
-                
-                alert = self.anomaly_detector.add_volume_data(sym, volume)
+
+                alert = self.anomaly_detector.add_volume_data(sym, volume, timestamp=datetime.now(), volume_24h=volume_24h)
                 if alert:
                     if not hasattr(self, 'thread_safe_alerts'):
                         self.thread_safe_alerts = []

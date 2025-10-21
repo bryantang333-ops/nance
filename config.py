@@ -23,6 +23,7 @@ REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5))
 PRICE_SPIKE_THRESHOLD = 0.03  # 3% price spike in 5 minutes
 VOLUME_SPIKE_THRESHOLD = 2.0  # 2x volume above 1-hour average
 OI_CHANGE_THRESHOLD = 0.10    # 10% OI change in 10 minutes
+MIN_24H_VOLUME_USDT = 100_000_000  # Minimum 24h volume in USDT (100M)
 
 # Time Windows (in minutes)
 PRICE_WINDOW = 5

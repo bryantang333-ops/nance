@@ -12,7 +12,8 @@ import asyncio
 
 from config import (
     PRICE_SPIKE_THRESHOLD, VOLUME_SPIKE_THRESHOLD, OI_CHANGE_THRESHOLD,
-    PRICE_WINDOW, VOLUME_WINDOW, OI_WINDOW, TELEGRAM_ENABLED
+    PRICE_WINDOW, VOLUME_WINDOW, OI_WINDOW, TELEGRAM_ENABLED,
+    MIN_24H_VOLUME_USDT
 )
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ class AnomalyDetector:
         else:
             self.telegram_notifier = None
         
-    def add_price_data(self, symbol: str, price: float, timestamp: datetime = None):
+    def add_price_data(self, symbol: str, price: float, timestamp: datetime = None, volume_24h: float = None):
         """Add price data and check for anomalies"""
         if timestamp is None:
             timestamp = datetime.now()
@@ -66,8 +67,8 @@ class AnomalyDetector:
             if ts > cutoff_time
         ]
         
-        # Check for price spike
-        alert = self._detect_price_spike(symbol, price, timestamp)
+        # Check for price spike (only if 24h volume meets threshold)
+        alert = self._detect_price_spike(symbol, price, timestamp, volume_24h)
         if alert:
             self.alerts.append(alert)
             self._send_telegram_alert(alert)
@@ -75,7 +76,7 @@ class AnomalyDetector:
         
         return None
     
-    def add_volume_data(self, symbol: str, volume: float, timestamp: datetime = None):
+    def add_volume_data(self, symbol: str, volume: float, timestamp: datetime = None, volume_24h: float = None):
         """Add volume data and check for anomalies"""
         if timestamp is None:
             timestamp = datetime.now()
@@ -92,8 +93,8 @@ class AnomalyDetector:
             if ts > cutoff_time
         ]
         
-        # Check for volume spike
-        alert = self._detect_volume_spike(symbol, volume, timestamp)
+        # Check for volume spike (only if 24h volume meets threshold)
+        alert = self._detect_volume_spike(symbol, volume, timestamp, volume_24h)
         if alert:
             self.alerts.append(alert)
             self._send_telegram_alert(alert)
@@ -127,9 +128,13 @@ class AnomalyDetector:
         
         return None
     
-    def _detect_price_spike(self, symbol: str, current_price: float, timestamp: datetime) -> Optional[AnomalyAlert]:
-        """Detect price spikes in the last 5 minutes"""
+    def _detect_price_spike(self, symbol: str, current_price: float, timestamp: datetime, volume_24h: float = None) -> Optional[AnomalyAlert]:
+        """Detect price spikes in the last 5 minutes (only for high-volume pairs)"""
         if symbol not in self.price_history or len(self.price_history[symbol]) < 2:
+            return None
+        
+        # Check 24h volume threshold first
+        if volume_24h is not None and volume_24h < MIN_24H_VOLUME_USDT:
             return None
         
         # Get prices from the last 5 minutes
@@ -150,6 +155,8 @@ class AnomalyDetector:
             severity = self._get_severity(abs(price_change), PRICE_SPIKE_THRESHOLD)
             direction = "up" if price_change > 0 else "down"
             
+            volume_info = f" (24h vol: ${volume_24h/1_000_000:.1f}M)" if volume_24h else ""
+            
             return AnomalyAlert(
                 symbol=symbol,
                 alert_type="price_spike",
@@ -158,14 +165,18 @@ class AnomalyDetector:
                 threshold=PRICE_SPIKE_THRESHOLD,
                 percentage_change=price_change * 100,
                 timestamp=timestamp,
-                description=f"Price {direction} {abs(price_change)*100:.2f}% in {PRICE_WINDOW} minutes"
+                description=f"Price {direction} {abs(price_change)*100:.2f}% in {PRICE_WINDOW} minutes{volume_info}"
             )
         
         return None
     
-    def _detect_volume_spike(self, symbol: str, current_volume: float, timestamp: datetime) -> Optional[AnomalyAlert]:
-        """Detect volume spikes compared to 1-hour average"""
+    def _detect_volume_spike(self, symbol: str, current_volume: float, timestamp: datetime, volume_24h: float = None) -> Optional[AnomalyAlert]:
+        """Detect volume spikes compared to 1-hour average (only for high-volume pairs)"""
         if symbol not in self.volume_history or len(self.volume_history[symbol]) < 10:
+            return None
+        
+        # Check 24h volume threshold first
+        if volume_24h is not None and volume_24h < MIN_24H_VOLUME_USDT:
             return None
         
         # Get volumes from the last hour
@@ -189,6 +200,8 @@ class AnomalyDetector:
         if volume_ratio >= VOLUME_SPIKE_THRESHOLD:
             severity = self._get_severity(volume_ratio, VOLUME_SPIKE_THRESHOLD)
             
+            volume_info = f" (24h vol: ${volume_24h/1_000_000:.1f}M)" if volume_24h else ""
+            
             return AnomalyAlert(
                 symbol=symbol,
                 alert_type="volume_spike",
@@ -197,7 +210,7 @@ class AnomalyDetector:
                 threshold=VOLUME_SPIKE_THRESHOLD,
                 percentage_change=(volume_ratio - 1) * 100,
                 timestamp=timestamp,
-                description=f"Volume {volume_ratio:.1f}x above 1-hour average"
+                description=f"Volume {volume_ratio:.1f}x above 1-hour average{volume_info}"
             )
         
         return None
