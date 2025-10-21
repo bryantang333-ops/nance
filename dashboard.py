@@ -479,9 +479,15 @@ class Dashboard:
         """Start monitoring all USDT futures pairs"""
         st.session_state.is_monitoring = True
         
-        # Get all USDT futures symbols
-        with st.spinner("Loading USDT futures symbols..."):
-            symbols = self.binance_client.get_usdt_futures_symbols()
+        # Get USDⓈ-M and COIN-M perpetual futures symbols
+        with st.spinner("Loading futures symbols (USDⓈ-M & COIN-M)..."):
+            usdt_symbols = self.binance_client.get_usdt_futures_symbols()
+            coinm_symbols = []
+            try:
+                coinm_symbols = self.binance_client.get_coinm_futures_symbols()
+            except Exception:
+                coinm_symbols = []
+            symbols = list(dict.fromkeys(usdt_symbols + coinm_symbols))
         
         if not symbols:
             st.error("Failed to load symbols. Please try again.")
@@ -544,19 +550,26 @@ class Dashboard:
                     self.thread_safe_alerts.append(alert)
                 
                 # Get open interest (this requires a separate API call)
-                try:
-                    oi_data = self.binance_client.get_open_interest(sym)
-                    if oi_data:
-                        oi = float(oi_data.get('openInterest', 0))
-                        self.thread_safe_data[sym]['open_interest'] = oi
-                        
-                        alert = self.anomaly_detector.add_oi_data(sym, oi)
-                        if alert:
-                            if not hasattr(self, 'thread_safe_alerts'):
-                                self.thread_safe_alerts = []
-                            self.thread_safe_alerts.append(alert)
-                except Exception as e:
-                    logger.warning(f"Failed to get OI for {sym}: {e}")
+                # Only try OI for USDT pairs to avoid errors with USD pairs
+                if sym.endswith('USDT'):
+                    try:
+                        oi_data = self.binance_client.get_open_interest(sym)
+                        if oi_data and 'openInterest' in oi_data:
+                            oi = float(oi_data.get('openInterest', 0))
+                            self.thread_safe_data[sym]['open_interest'] = oi
+                            
+                            alert = self.anomaly_detector.add_oi_data(sym, oi)
+                            if alert:
+                                if not hasattr(self, 'thread_safe_alerts'):
+                                    self.thread_safe_alerts = []
+                                self.thread_safe_alerts.append(alert)
+                    except Exception as e:
+                        logger.debug(f"Open interest not available for {sym}: {e}")
+                        # Set a default value so the UI doesn't break
+                        self.thread_safe_data[sym]['open_interest'] = 0
+                else:
+                    # For non-USDT pairs, set OI to 0
+                    self.thread_safe_data[sym]['open_interest'] = 0
                     
             except Exception as e:
                 logger.error(f"Error in websocket callback for {sym}: {e}")

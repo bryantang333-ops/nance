@@ -8,8 +8,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Binance API Configuration
-BINANCE_BASE_URL = "https://fapi.binance.com"
+BINANCE_BASE_URL = "https://fapi.binance.com"  # USDⓈ-M (USDT/USDC) futures
 BINANCE_WS_URL = "wss://fstream.binance.com/ws/"
+
+# COIN-Margined futures
+BINANCE_COIN_BASE_URL = "https://dapi.binance.com"
+BINANCE_WS_URL_COIN = "wss://dstream.binance.com/ws/"
 
 # Application Configuration
 STREAMLIT_PORT = int(os.getenv("STREAMLIT_PORT", 8501))

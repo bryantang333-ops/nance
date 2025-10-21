@@ -12,7 +12,9 @@ from datetime import datetime, timedelta
 import logging
 
 from config import (
-    BINANCE_BASE_URL, BINANCE_WS_URL, MAX_REQUESTS_PER_MINUTE, 
+    BINANCE_BASE_URL, BINANCE_WS_URL,
+    BINANCE_COIN_BASE_URL, BINANCE_WS_URL_COIN,
+    MAX_REQUESTS_PER_MINUTE,
     REQUEST_DELAY, WS_RECONNECT_DELAY, WS_MAX_RECONNECT_ATTEMPTS,
     WS_PING_INTERVAL, WS_PING_TIMEOUT
 )
@@ -71,6 +73,30 @@ class BinanceClient:
 
         logger.error("Falling back to a small default symbol list due to repeated failures")
         return fallback_symbols
+
+    def get_coinm_futures_symbols(self) -> List[str]:
+        """Get all COIN-M perpetual futures symbols (e.g., BTCUSD_PERP)."""
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.rate_limiter.wait()
+                response = self.session.get(
+                    f"{BINANCE_COIN_BASE_URL}/dapi/v1/exchangeInfo",
+                    timeout=10
+                )
+                response.raise_for_status()
+                data = response.json()
+                symbols: List[str] = []
+                for s in data.get('symbols', []):
+                    if s.get('status') == 'TRADING' and s.get('contractType') == 'PERPETUAL':
+                        symbols.append(s['symbol'])  # e.g., BTCUSD_PERP
+                if symbols:
+                    logger.info(f"Found {len(symbols)} COIN-M perpetual futures symbols")
+                    return symbols
+            except Exception as e:
+                logger.warning(f"Attempt {attempt}/{max_retries} to fetch COIN-M symbols failed: {e}")
+                time.sleep(2 * attempt)
+        return []
     
     def get_24h_ticker(self, symbol: str) -> Optional[Dict]:
         """Get 24h ticker statistics for a symbol"""
@@ -85,25 +111,34 @@ class BinanceClient:
             return None
     
     def get_open_interest(self, symbol: str) -> Optional[Dict]:
-        """Get open interest for a symbol"""
+        """Get open interest for a symbol, auto-selecting USDⓈ-M or COIN-M endpoints."""
         try:
             self.rate_limiter.wait()
-            response = self.session.get(f"{BINANCE_BASE_URL}/fapi/v1/openInterest", 
-                                      params={'symbol': symbol})
+            # Decide market based on naming convention
+            if symbol.endswith('USDT') or symbol.endswith('USDC'):
+                url = f"{BINANCE_BASE_URL}/fapi/v1/openInterest"
+            else:
+                url = f"{BINANCE_COIN_BASE_URL}/dapi/v1/openInterest"
+            response = self.session.get(url, params={'symbol': symbol}, timeout=10)
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error(f"Error fetching open interest for {symbol}: {e}")
+            logger.warning(f"Error fetching open interest for {symbol}: {e}")
             return None
     
     def start_websocket(self, symbol: str, callback: Callable):
-        """Start WebSocket connection for a symbol"""
+        """Start WebSocket connection for a symbol (handles both markets)."""
         if symbol in self.ws_connections:
             logger.warning(f"WebSocket already exists for {symbol}")
             return
         
+        # USDⓈ-M vs COIN-M stream base
+        if symbol.endswith('USDT') or symbol.endswith('USDC'):
+            ws_base = BINANCE_WS_URL
+        else:
+            ws_base = BINANCE_WS_URL_COIN
         stream_name = f"{symbol.lower()}@ticker"
-        ws_url = f"{BINANCE_WS_URL}{stream_name}"
+        ws_url = f"{ws_base}{stream_name}"
         
         self.ws_callbacks[symbol] = callback
         self.reconnect_attempts[symbol] = 0
