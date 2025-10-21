@@ -164,6 +164,18 @@ class Dashboard:
         
         if refresh_interval != REFRESH_INTERVAL:
             st.session_state.refresh_interval = refresh_interval
+
+        # Diagnostics
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🛠 Diagnostics")
+        if st.button("Run Diagnostics"):
+            try:
+                diags = self.binance_client.diagnostics()
+                st.sidebar.json(diags)
+                if diags.get('oi_fetch_disabled'):
+                    st.sidebar.warning("Open Interest requests are disabled due to 451 blocking.")
+            except Exception as e:
+                st.sidebar.error(f"Diagnostics failed: {e}")
     
     def _render_welcome_screen(self):
         """Render welcome screen when not monitoring"""
@@ -564,8 +576,7 @@ class Dashboard:
                                     self.thread_safe_alerts = []
                                 self.thread_safe_alerts.append(alert)
                     except Exception as e:
-                        logger.debug(f"Open interest not available for {sym}: {e}")
-                        # Set a default value so the UI doesn't break
+                        # Avoid noisy logs on serverless when blocked
                         self.thread_safe_data[sym]['open_interest'] = 0
                 else:
                     # For non-USDT pairs, set OI to 0

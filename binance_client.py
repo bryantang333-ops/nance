@@ -32,6 +32,8 @@ class BinanceClient:
         self.ws_connections = {}
         self.ws_callbacks = {}
         self.reconnect_attempts = {}
+        # If Binance blocks OI endpoint (451), flip this flag to avoid hammering
+        self.oi_fetch_disabled = False
         
     def get_usdt_futures_symbols(self) -> List[str]:
         """Get all USDT perpetual futures symbols with retries and safe fallback."""
@@ -148,20 +150,51 @@ class BinanceClient:
             return None
     
     def get_open_interest(self, symbol: str) -> Optional[Dict]:
-        """Get open interest for a symbol, auto-selecting USDⓈ-M or COIN-M endpoints."""
+        """Get open interest for a symbol, auto-selecting USDⓈ-M or COIN-M endpoints.
+        If a 451 (geo block) is encountered once, disable subsequent OI calls to
+        protect the app from noisy logs and wasted requests on serverless hosts.
+        """
         try:
+            if self.oi_fetch_disabled:
+                return None
             self.rate_limiter.wait()
             # Decide market based on naming convention
             if symbol.endswith('USDT') or symbol.endswith('USDC'):
                 url = f"{BINANCE_BASE_URL}/fapi/v1/openInterest"
             else:
                 url = f"{BINANCE_COIN_BASE_URL}/dapi/v1/openInterest"
-            response = self.session.get(url, params={'symbol': symbol}, timeout=10)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+            response = self.session.get(url, params={'symbol': symbol}, headers=headers, timeout=10)
+            if response.status_code == 451:
+                logger.warning("Open interest endpoint blocked with 451. Disabling OI fetches for this run.")
+                self.oi_fetch_disabled = True
+                return None
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.warning(f"Error fetching open interest for {symbol}: {e}")
             return None
+
+    def diagnostics(self) -> Dict:
+        """Return quick diagnostics useful for serverless debugging."""
+        diags = {
+            'oi_fetch_disabled': self.oi_fetch_disabled,
+        }
+        try:
+            resp = self.session.get(f"{BINANCE_BASE_URL}/fapi/v1/ping", timeout=5)
+            diags['fapi_ping_status'] = resp.status_code
+        except Exception as e:
+            diags['fapi_ping_status'] = str(e)
+        try:
+            resp = self.session.get(f"{BINANCE_COIN_BASE_URL}/dapi/v1/ping", timeout=5)
+            diags['dapi_ping_status'] = resp.status_code
+        except Exception as e:
+            diags['dapi_ping_status'] = str(e)
+        return diags
     
     def start_websocket(self, symbol: str, callback: Callable):
         """Start WebSocket connection for a symbol (handles both markets)."""
