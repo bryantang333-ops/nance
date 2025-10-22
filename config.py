@@ -19,12 +19,12 @@ BINANCE_WS_URL_COIN = "wss://dstream.binance.com/ws/"
 STREAMLIT_PORT = int(os.getenv("STREAMLIT_PORT", 8501))
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5))
 
-# Production Settings - User Specified Conditions
-PRICE_SPIKE_THRESHOLD = 0.10  # 10% price spike in 5 minutes (extreme moves only)
-VOLUME_SPIKE_THRESHOLD = 5.0  # 5x volume above 1-hour average (massive spikes)
-OI_CHANGE_THRESHOLD = 0.20    # 20% OI change in 10 minutes
-MIN_24H_VOLUME_USDT = 250_000_000  # Minimum 24h volume in USDT (250M)
-MIN_MARKET_CAP_USDT = 100_000_000  # 100M market cap minimum (established tokens only)
+# EMERGENCY FIX: Ultra-aggressive settings to stop spam
+PRICE_SPIKE_THRESHOLD = 0.20  # 20% price spike in 5 minutes (ULTRA EXTREME)
+VOLUME_SPIKE_THRESHOLD = 15.0  # 15x volume above 1-hour average (ULTRA MASSIVE)
+OI_CHANGE_THRESHOLD = 0.50    # 50% OI change in 10 minutes (ULTRA HIGH)
+MIN_24H_VOLUME_USDT = 1_000_000_000  # Minimum 24h volume in USDT (1B - ULTRA HIGH)
+MIN_MARKET_CAP_USDT = 500_000_000  # 500M market cap minimum (ULTRA HIGH)
 
 # Time Windows (in minutes)
 PRICE_WINDOW = 5
@@ -47,11 +47,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # Re-enabled with proper restrictive settings
 TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
-# Production Telegram Settings - User Specified
+# EMERGENCY FIX: Ultra-aggressive Telegram settings
 TELEGRAM_SEND_EXTREME = True
-TELEGRAM_SEND_HIGH = True    # Send high severity alerts
-TELEGRAM_SEND_MEDIUM = True  # Send medium severity alerts  
-TELEGRAM_SEND_LOW = False    # Block low severity alerts
+TELEGRAM_SEND_HIGH = False   # BLOCK high severity alerts
+TELEGRAM_SEND_MEDIUM = False # BLOCK medium severity alerts  
+TELEGRAM_SEND_LOW = False    # BLOCK low severity alerts
 TELEGRAM_BATCH_SIZE = 1  # Send one alert at a time
-TELEGRAM_RATE_LIMIT = 300.0  # 5 MINUTES between messages (very conservative)
-ALERT_COOLDOWN_HOURS = 24  # 24-hour cooldown for same ticker
+TELEGRAM_RATE_LIMIT = 1800.0  # 30 MINUTES between messages (ULTRA CONSERVATIVE)
+ALERT_COOLDOWN_HOURS = 48  # 48-hour cooldown for same ticker (ULTRA LONG)
