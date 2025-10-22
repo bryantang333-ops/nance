@@ -32,22 +32,35 @@ class BinanceClient:
         self.ws_connections = {}
         self.ws_callbacks = {}
         self.reconnect_attempts = {}
-        # If Binance blocks OI endpoint (451), flip this flag to avoid hammering
-        self.oi_fetch_disabled = False
         
     def get_usdt_futures_symbols(self) -> List[str]:
         """Get all USDT perpetual futures symbols with retries and safe fallback."""
-        # Conservative fallback list so app can start even if REST call fails
+        # Expanded fallback list to include many more pairs for comprehensive monitoring
         fallback_symbols = [
-            # USDⓈ-M (USDT margined)
-            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-            "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT",
-            # COIN-M (coin margined) - popular pairs
-            "BTCUSD_PERP", "ETHUSD_PERP", "BNBUSD_PERP", "ADAUSD_PERP", "XRPUSD_PERP"
+            # Major USDⓈ-M pairs
+            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", 
+            "LINKUSDT", "TONUSDT", "MATICUSDT", "DOTUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "FILUSDT",
+            "TRXUSDT", "ETCUSDT", "XLMUSDT", "XMRUSDT", "DASHUSDT", "ZECUSDT", "XTZUSDT", "IOTAUSDT",
+            "BATUSDT", "VETUSDT", "THETAUSDT", "ALGOUSDT", "ZILUSDT", "KSMUSDT", "AAVEUSDT", "SUSHIUSDT",
+            "COMPUSDT", "YFIUSDT", "SNXUSDT", "MKRUSDT", "CRVUSDT", "1INCHUSDT", "GRTUSDT", "ENJUSDT",
+            "CHZUSDT", "HOTUSDT", "MANAUSDT", "SANDUSDT", "AXSUSDT", "GALAUSDT", "FLOWUSDT", "ICPUSDT",
+            "NEARUSDT", "FTMUSDT", "ROSEUSDT", "HBARUSDT", "EGLDUSDT", "ONEUSDT", "HARMONYUSDT", "ZENUSDT",
+            "KAVAUSDT", "WAVESUSDT", "OMGUSDT", "NEOUSDT", "QTUMUSDT", "ONTUSDT", "ZRXUSDT", "REPUSDT",
+            "STORJUSDT", "DGBUSDT", "SCUSDT", "ZENUSDT", "RVNUSDT", "DCRUSDT", "LSKUSDT", "NANOUSDT",
+            "ICXUSDT", "WANUSDT", "AIONUSDT", "REQUSDT", "LRCUSDT", "KNCUSDT", "BNTUSDT", "LENDUSDT",
+            "RENUSDT", "KMDUSDT", "ARKUSDT", "LSKUSDT", "FUNUSDT", "GNTUSDT", "REPUSDT", "STORJUSDT",
+            # Additional popular pairs
+            "COAIUSDT", "ZECUSDT", "DASHUSDT", "XMRUSDT", "DGBUSDT", "SCUSDT", "RVNUSDT", "DCRUSDT",
+            "LSKUSDT", "NANOUSDT", "ICXUSDT", "WANUSDT", "AIONUSDT", "REQUSDT", "LRCUSDT", "KNCUSDT",
+            "BNTUSDT", "LENDUSDT", "RENUSDT", "KMDUSDT", "ARKUSDT", "FUNUSDT", "GNTUSDT", "REPUSDT",
+            # COIN-M pairs
+            "BTCUSD_PERP", "ETHUSD_PERP", "BNBUSD_PERP", "ADAUSD_PERP", "XRPUSD_PERP", "SOLUSD_PERP",
+            "DOGEUSD_PERP", "AVAXUSD_PERP", "LINKUSD_PERP", "TONUSD_PERP", "MATICUSD_PERP", "DOTUSD_PERP",
+            "LTCUSD_PERP", "UNIUSD_PERP", "ATOMUSD_PERP", "FILUSD_PERP", "TRXUSD_PERP", "ETCUSD_PERP"
         ]
 
-        # Try a few times with short timeouts (common on serverless platforms)
-        max_retries = 3
+        # Try multiple times with different strategies to get all symbols
+        max_retries = 5
         for attempt in range(1, max_retries + 1):
             try:
                 self.rate_limiter.wait()
@@ -148,43 +161,10 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"Error fetching 24h ticker for {symbol}: {e}")
             return None
-    
-    def get_open_interest(self, symbol: str) -> Optional[Dict]:
-        """Get open interest for a symbol, auto-selecting USDⓈ-M or COIN-M endpoints.
-        If a 451 (geo block) is encountered once, disable subsequent OI calls to
-        protect the app from noisy logs and wasted requests on serverless hosts.
-        """
-        try:
-            if self.oi_fetch_disabled:
-                return None
-            self.rate_limiter.wait()
-            # Decide market based on naming convention
-            if symbol.endswith('USDT') or symbol.endswith('USDC'):
-                url = f"{BINANCE_BASE_URL}/fapi/v1/openInterest"
-            else:
-                url = f"{BINANCE_COIN_BASE_URL}/dapi/v1/openInterest"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json',
-                'Accept-Language': 'en-US,en;q=0.9'
-            }
-            response = self.session.get(url, params={'symbol': symbol}, headers=headers, timeout=10)
-            if response.status_code == 451:
-                # Downgrade to debug to avoid noisy logs on serverless hosts
-                logger.debug("Open interest endpoint blocked with 451. Disabling OI fetches for this run.")
-                self.oi_fetch_disabled = True
-                return None
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.warning(f"Error fetching open interest for {symbol}: {e}")
-            return None
 
     def diagnostics(self) -> Dict:
         """Return quick diagnostics useful for serverless debugging."""
-        diags = {
-            'oi_fetch_disabled': self.oi_fetch_disabled,
-        }
+        diags = {}
         try:
             resp = self.session.get(f"{BINANCE_BASE_URL}/fapi/v1/ping", timeout=5)
             diags['fapi_ping_status'] = resp.status_code
