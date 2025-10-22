@@ -44,7 +44,9 @@ WS_PING_TIMEOUT = 10   # seconds
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+# EMERGENCY: Temporarily disable all alerts to stop spam
+TELEGRAM_ENABLED = False  # DISABLED TO STOP SPAM
+# TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
 # EMERGENCY FIX: Ultra-restrictive Telegram settings
 TELEGRAM_SEND_EXTREME = True
