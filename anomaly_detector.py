@@ -148,8 +148,8 @@ class AnomalyDetector:
         if volume_24h is not None and volume_24h < MIN_24H_VOLUME_USDT:
             return None
         
-        # Check market cap threshold
-        if market_cap is not None and market_cap < MIN_MARKET_CAP_USDT:
+        # Check market cap threshold (only if MIN_MARKET_CAP_USDT > 0)
+        if market_cap is not None and MIN_MARKET_CAP_USDT > 0 and market_cap < MIN_MARKET_CAP_USDT:
             return None
         
         # Get prices from the last 5 minutes
@@ -194,8 +194,8 @@ class AnomalyDetector:
         if volume_24h is not None and volume_24h < MIN_24H_VOLUME_USDT:
             return None
         
-        # Check market cap threshold
-        if market_cap is not None and market_cap < MIN_MARKET_CAP_USDT:
+        # Check market cap threshold (only if MIN_MARKET_CAP_USDT > 0)
+        if market_cap is not None and MIN_MARKET_CAP_USDT > 0 and market_cap < MIN_MARKET_CAP_USDT:
             return None
         
         # Get volumes from the last hour

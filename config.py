@@ -24,7 +24,7 @@ PRICE_SPIKE_THRESHOLD = 0.08  # 8% price spike in 5 minutes (very high threshold
 VOLUME_SPIKE_THRESHOLD = 5.0  # 5x volume above 1-hour average (very high threshold)
 OI_CHANGE_THRESHOLD = 0.20    # 20% OI change in 10 minutes (very high threshold)
 MIN_24H_VOLUME_USDT = 250_000_000  # Minimum 24h volume in USDT (250M)
-MIN_MARKET_CAP_USDT = 25_000_000   # Minimum market cap in USDT (25M)
+MIN_MARKET_CAP_USDT = 0  # No market cap restriction - include all altcoins
 
 # Time Windows (in minutes)
 PRICE_WINDOW = 5
