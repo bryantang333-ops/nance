@@ -19,12 +19,12 @@ BINANCE_WS_URL_COIN = "wss://dstream.binance.com/ws/"
 STREAMLIT_PORT = int(os.getenv("STREAMLIT_PORT", 8501))
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5))
 
-# EMERGENCY FIX: Ultra-restrictive settings to stop spam
-PRICE_SPIKE_THRESHOLD = 0.15  # 15% price spike in 5 minutes (ULTRA HIGH)
-VOLUME_SPIKE_THRESHOLD = 10.0  # 10x volume above 1-hour average (ULTRA HIGH)
-OI_CHANGE_THRESHOLD = 0.30    # 30% OI change in 10 minutes (ULTRA HIGH)
-MIN_24H_VOLUME_USDT = 500_000_000  # Minimum 24h volume in USDT (500M - ULTRA HIGH)
-MIN_MARKET_CAP_USDT = 100_000_000  # 100M market cap minimum (ULTRA HIGH)
+# Production Settings - User Specified Conditions
+PRICE_SPIKE_THRESHOLD = 0.10  # 10% price spike in 5 minutes (extreme moves only)
+VOLUME_SPIKE_THRESHOLD = 5.0  # 5x volume above 1-hour average (massive spikes)
+OI_CHANGE_THRESHOLD = 0.20    # 20% OI change in 10 minutes
+MIN_24H_VOLUME_USDT = 250_000_000  # Minimum 24h volume in USDT (250M)
+MIN_MARKET_CAP_USDT = 100_000_000  # 100M market cap minimum (established tokens only)
 
 # Time Windows (in minutes)
 PRICE_WINDOW = 5
@@ -44,15 +44,14 @@ WS_PING_TIMEOUT = 10   # seconds
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# EMERGENCY: Temporarily disable all alerts to stop spam
-TELEGRAM_ENABLED = False  # DISABLED TO STOP SPAM
-# TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+# Re-enabled with proper restrictive settings
+TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
-# EMERGENCY FIX: Ultra-restrictive Telegram settings
+# Production Telegram Settings - User Specified
 TELEGRAM_SEND_EXTREME = True
-TELEGRAM_SEND_HIGH = False   # BLOCK high severity alerts
-TELEGRAM_SEND_MEDIUM = False # BLOCK medium severity alerts  
-TELEGRAM_SEND_LOW = False    # BLOCK low severity alerts
+TELEGRAM_SEND_HIGH = True    # Send high severity alerts
+TELEGRAM_SEND_MEDIUM = True  # Send medium severity alerts  
+TELEGRAM_SEND_LOW = False    # Block low severity alerts
 TELEGRAM_BATCH_SIZE = 1  # Send one alert at a time
-TELEGRAM_RATE_LIMIT = 300.0  # 5 MINUTES between messages (ULTRA CONSERVATIVE)
+TELEGRAM_RATE_LIMIT = 300.0  # 5 MINUTES between messages (very conservative)
 ALERT_COOLDOWN_HOURS = 24  # 24-hour cooldown for same ticker
