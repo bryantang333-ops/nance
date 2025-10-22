@@ -64,7 +64,7 @@ class TelegramNotifier:
             return False
     
     async def send_batch_alerts(self, alerts: List[AnomalyAlert]) -> int:
-        """Send multiple alerts to Telegram"""
+        """Send multiple alerts to Telegram with proper rate limiting"""
         if not self.is_configured():
             logger.warning("Telegram not configured, skipping batch alerts")
             return 0
@@ -92,9 +92,12 @@ class TelegramNotifier:
             )
             sent_count += 1
             
-            # Send individual alerts for extreme and high severity
+            # Rate limiting: wait between messages
+            await asyncio.sleep(5.0)
+            
+            # Send individual alerts for extreme, high, and medium severity
             for alert in alerts:
-                if alert.severity in ['extreme', 'high']:
+                if alert.severity in ['extreme', 'high', 'medium']:  # Send medium and above
                     message = self._format_alert_message(alert)
                     await self.bot.send_message(
                         chat_id=self.chat_id,
@@ -103,14 +106,20 @@ class TelegramNotifier:
                         disable_web_page_preview=True
                     )
                     sent_count += 1
-                    await asyncio.sleep(0.5)  # Rate limiting
+                    # Very conservative rate limiting
+                    await asyncio.sleep(10.0)  # 10 seconds between messages
             
             logger.info(f"Sent {sent_count} Telegram messages for {len(alerts)} alerts")
             return sent_count
             
         except TelegramError as e:
-            logger.error(f"Failed to send batch Telegram alerts: {e}")
-            return sent_count
+            if "Flood control exceeded" in str(e):
+                logger.warning(f"Telegram flood control hit, will retry later: {e}")
+                # Don't treat this as a complete failure
+                return sent_count
+            else:
+                logger.error(f"Failed to send batch Telegram alerts: {e}")
+                return sent_count
         except Exception as e:
             logger.error(f"Unexpected error sending batch Telegram alerts: {e}")
             return sent_count

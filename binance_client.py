@@ -161,6 +161,29 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"Error fetching 24h ticker for {symbol}: {e}")
             return None
+    
+    def get_market_cap_estimate(self, symbol: str) -> Optional[float]:
+        """Get estimated market cap for a symbol (in USDT)"""
+        try:
+            # For futures, we can't get exact market cap, but we can estimate from volume
+            # This is a simplified approach - in production you'd want more sophisticated filtering
+            ticker_data = self.get_24h_ticker(symbol)
+            if not ticker_data:
+                return None
+            
+            # Use 24h volume as a proxy for market cap estimation
+            # This is not perfect but gives us a reasonable filter
+            volume_24h = float(ticker_data.get('volume', 0))
+            price = float(ticker_data.get('lastPrice', 0))
+            
+            # Estimate market cap as volume * price (very rough estimate)
+            estimated_market_cap = volume_24h * price
+            
+            return estimated_market_cap
+            
+        except Exception as e:
+            logger.error(f"Error estimating market cap for {symbol}: {e}")
+            return None
 
     def diagnostics(self) -> Dict:
         """Return quick diagnostics useful for serverless debugging."""

@@ -19,11 +19,12 @@ BINANCE_WS_URL_COIN = "wss://dstream.binance.com/ws/"
 STREAMLIT_PORT = int(os.getenv("STREAMLIT_PORT", 8501))
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5))
 
-# Anomaly Detection Thresholds
-PRICE_SPIKE_THRESHOLD = 0.03  # 3% price spike in 5 minutes
-VOLUME_SPIKE_THRESHOLD = 2.0  # 2x volume above 1-hour average
-OI_CHANGE_THRESHOLD = 0.10    # 10% OI change in 10 minutes
-MIN_24H_VOLUME_USDT = 100_000_000  # Minimum 24h volume in USDT (100M)
+# Anomaly Detection Thresholds (Production Settings - Very Restrictive)
+PRICE_SPIKE_THRESHOLD = 0.08  # 8% price spike in 5 minutes (very high threshold)
+VOLUME_SPIKE_THRESHOLD = 5.0  # 5x volume above 1-hour average (very high threshold)
+OI_CHANGE_THRESHOLD = 0.20    # 20% OI change in 10 minutes (very high threshold)
+MIN_24H_VOLUME_USDT = 250_000_000  # Minimum 24h volume in USDT (250M)
+MIN_MARKET_CAP_USDT = 25_000_000   # Minimum market cap in USDT (25M)
 
 # Time Windows (in minutes)
 PRICE_WINDOW = 5
@@ -45,10 +46,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
-# Telegram Alert Settings
+# Telegram Alert Settings (Production - Very Restrictive)
 TELEGRAM_SEND_EXTREME = True
-TELEGRAM_SEND_HIGH = True
-TELEGRAM_SEND_MEDIUM = False
-TELEGRAM_SEND_LOW = False
-TELEGRAM_BATCH_SIZE = 10  # Send alerts in batches
-TELEGRAM_RATE_LIMIT = 1.0  # seconds between messages
+TELEGRAM_SEND_HIGH = True   # Send high severity alerts
+TELEGRAM_SEND_MEDIUM = True # Send medium severity alerts
+TELEGRAM_SEND_LOW = False   # Do not send low severity alerts
+TELEGRAM_BATCH_SIZE = 1  # Send one alert at a time
+TELEGRAM_RATE_LIMIT = 30.0  # 30 seconds between messages (very conservative)
+ALERT_COOLDOWN_HOURS = 24  # 24-hour cooldown for same ticker

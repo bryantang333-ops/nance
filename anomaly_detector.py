@@ -9,11 +9,14 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import logging
 import asyncio
+import time
+import threading
 
 from config import (
     PRICE_SPIKE_THRESHOLD, VOLUME_SPIKE_THRESHOLD, OI_CHANGE_THRESHOLD,
     PRICE_WINDOW, VOLUME_WINDOW, OI_WINDOW, TELEGRAM_ENABLED,
-    MIN_24H_VOLUME_USDT
+    MIN_24H_VOLUME_USDT, MIN_MARKET_CAP_USDT, TELEGRAM_RATE_LIMIT, TELEGRAM_BATCH_SIZE,
+    TELEGRAM_SEND_EXTREME, TELEGRAM_SEND_HIGH, TELEGRAM_SEND_MEDIUM, TELEGRAM_SEND_LOW, ALERT_COOLDOWN_HOURS
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,14 @@ class AnomalyDetector:
         self.oi_history = {}     # symbol -> list of (timestamp, oi)
         self.alerts = []         # list of AnomalyAlert objects
         
+        # Telegram rate limiting and batching
+        self.telegram_queue = []  # Queue for pending alerts
+        self.last_telegram_send = 0  # Timestamp of last send
+        self.telegram_lock = threading.Lock()  # Thread safety for queue
+        
+        # Alert cooldown tracking (symbol -> last alert timestamp)
+        self.alert_cooldowns = {}  # symbol -> datetime of last alert
+        
         # Import telegram notifier only if enabled
         if TELEGRAM_ENABLED:
             try:
@@ -50,7 +61,7 @@ class AnomalyDetector:
         else:
             self.telegram_notifier = None
         
-    def add_price_data(self, symbol: str, price: float, timestamp: datetime = None, volume_24h: float = None):
+    def add_price_data(self, symbol: str, price: float, timestamp: datetime = None, volume_24h: float = None, market_cap: float = None):
         """Add price data and check for anomalies"""
         if timestamp is None:
             timestamp = datetime.now()
@@ -67,16 +78,16 @@ class AnomalyDetector:
             if ts > cutoff_time
         ]
         
-        # Check for price spike (only if 24h volume meets threshold)
-        alert = self._detect_price_spike(symbol, price, timestamp, volume_24h)
+        # Check for price spike (only if volume and market cap meet thresholds)
+        alert = self._detect_price_spike(symbol, price, timestamp, volume_24h, market_cap)
         if alert:
             self.alerts.append(alert)
-            self._send_telegram_alert(alert)
+            self._queue_telegram_alert(alert)
             return alert
         
         return None
     
-    def add_volume_data(self, symbol: str, volume: float, timestamp: datetime = None, volume_24h: float = None):
+    def add_volume_data(self, symbol: str, volume: float, timestamp: datetime = None, volume_24h: float = None, market_cap: float = None):
         """Add volume data and check for anomalies"""
         if timestamp is None:
             timestamp = datetime.now()
@@ -93,11 +104,11 @@ class AnomalyDetector:
             if ts > cutoff_time
         ]
         
-        # Check for volume spike (only if 24h volume meets threshold)
-        alert = self._detect_volume_spike(symbol, volume, timestamp, volume_24h)
+        # Check for volume spike (only if volume and market cap meet thresholds)
+        alert = self._detect_volume_spike(symbol, volume, timestamp, volume_24h, market_cap)
         if alert:
             self.alerts.append(alert)
-            self._send_telegram_alert(alert)
+            self._queue_telegram_alert(alert)
             return alert
         
         return None
@@ -123,18 +134,22 @@ class AnomalyDetector:
         alert = self._detect_oi_change(symbol, oi, timestamp)
         if alert:
             self.alerts.append(alert)
-            self._send_telegram_alert(alert)
+            self._queue_telegram_alert(alert)
             return alert
         
         return None
     
-    def _detect_price_spike(self, symbol: str, current_price: float, timestamp: datetime, volume_24h: float = None) -> Optional[AnomalyAlert]:
-        """Detect price spikes in the last 5 minutes (only for high-volume pairs)"""
+    def _detect_price_spike(self, symbol: str, current_price: float, timestamp: datetime, volume_24h: float = None, market_cap: float = None) -> Optional[AnomalyAlert]:
+        """Detect price spikes in the last 5 minutes (only for high-volume, high-market-cap pairs)"""
         if symbol not in self.price_history or len(self.price_history[symbol]) < 2:
             return None
         
         # Check 24h volume threshold first
         if volume_24h is not None and volume_24h < MIN_24H_VOLUME_USDT:
+            return None
+        
+        # Check market cap threshold
+        if market_cap is not None and market_cap < MIN_MARKET_CAP_USDT:
             return None
         
         # Get prices from the last 5 minutes
@@ -170,13 +185,17 @@ class AnomalyDetector:
         
         return None
     
-    def _detect_volume_spike(self, symbol: str, current_volume: float, timestamp: datetime, volume_24h: float = None) -> Optional[AnomalyAlert]:
-        """Detect volume spikes compared to 1-hour average (only for high-volume pairs)"""
+    def _detect_volume_spike(self, symbol: str, current_volume: float, timestamp: datetime, volume_24h: float = None, market_cap: float = None) -> Optional[AnomalyAlert]:
+        """Detect volume spikes compared to 1-hour average (only for high-volume, high-market-cap pairs)"""
         if symbol not in self.volume_history or len(self.volume_history[symbol]) < 10:
             return None
         
         # Check 24h volume threshold first
         if volume_24h is not None and volume_24h < MIN_24H_VOLUME_USDT:
+            return None
+        
+        # Check market cap threshold
+        if market_cap is not None and market_cap < MIN_MARKET_CAP_USDT:
             return None
         
         # Get volumes from the last hour
@@ -305,25 +324,117 @@ class AnomalyDetector:
         }
         return summary
     
-    def _send_telegram_alert(self, alert: AnomalyAlert):
-        """Send alert to Telegram if configured"""
-        if self.telegram_notifier and self.telegram_notifier.is_configured():
+    def _queue_telegram_alert(self, alert: AnomalyAlert):
+        """Queue alert for Telegram sending with rate limiting and cooldown"""
+        if not self.telegram_notifier or not self.telegram_notifier.is_configured():
+            return
+        
+        # Check if we should send this alert based on severity
+        if not self._should_send_alert(alert):
+            logger.debug(f"Skipping {alert.severity} alert for {alert.symbol} (severity filtering)")
+            return
+        
+        # Check cooldown for this symbol
+        if self._is_in_cooldown(alert.symbol):
+            logger.debug(f"Skipping alert for {alert.symbol} (in {ALERT_COOLDOWN_HOURS}h cooldown)")
+            return
+        
+        with self.telegram_lock:
+            self.telegram_queue.append(alert)
+            
+            # Check if we should send now (rate limiting)
+            current_time = time.time()
+            time_since_last_send = current_time - self.last_telegram_send
+            
+            # Send if we have enough alerts or enough time has passed
+            should_send = (
+                len(self.telegram_queue) >= TELEGRAM_BATCH_SIZE or
+                time_since_last_send >= TELEGRAM_RATE_LIMIT
+            )
+            
+            if should_send:
+                self._process_telegram_queue()
+    
+    def _should_send_alert(self, alert: AnomalyAlert) -> bool:
+        """Check if alert should be sent based on severity settings"""
+        if alert.severity == 'extreme' and TELEGRAM_SEND_EXTREME:
+            return True
+        if alert.severity == 'high' and TELEGRAM_SEND_HIGH:
+            return True
+        if alert.severity == 'medium' and TELEGRAM_SEND_MEDIUM:
+            return True
+        if alert.severity == 'low' and TELEGRAM_SEND_LOW:
+            return True
+        return False
+    
+    def _is_in_cooldown(self, symbol: str) -> bool:
+        """Check if symbol is in cooldown period"""
+        if symbol not in self.alert_cooldowns:
+            return False
+        
+        last_alert_time = self.alert_cooldowns[symbol]
+        cooldown_duration = timedelta(hours=ALERT_COOLDOWN_HOURS)
+        
+        return datetime.now() - last_alert_time < cooldown_duration
+    
+    def _update_cooldown(self, symbol: str):
+        """Update cooldown timestamp for symbol"""
+        self.alert_cooldowns[symbol] = datetime.now()
+    
+    def _process_telegram_queue(self):
+        """Process the telegram queue with proper rate limiting"""
+        if not self.telegram_queue:
+            return
+        
+        with self.telegram_lock:
+            if not self.telegram_queue:
+                return
+            
+            # Get alerts to send (up to batch size)
+            alerts_to_send = self.telegram_queue[:TELEGRAM_BATCH_SIZE]
+            self.telegram_queue = self.telegram_queue[TELEGRAM_BATCH_SIZE:]
+            
+            # Update last send time
+            self.last_telegram_send = time.time()
+            
+            # Update cooldowns for sent alerts
+            for alert in alerts_to_send:
+                self._update_cooldown(alert.symbol)
+        
+        # Send alerts in a separate thread to avoid blocking
+        try:
+            # Handle different thread contexts
             try:
-                # Handle different thread contexts
-                try:
-                    # Try to get existing event loop
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # If loop is already running, schedule the coroutine
-                        asyncio.create_task(self.telegram_notifier.send_alert(alert))
-                    else:
-                        # If no loop is running, run it
-                        loop.run_until_complete(self.telegram_notifier.send_alert(alert))
-                except RuntimeError:
-                    # No event loop in this thread, create a new one
-                    asyncio.run(self.telegram_notifier.send_alert(alert))
-            except Exception as e:
-                logger.error(f"Failed to send Telegram alert: {e}")
+                # Try to get existing event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is already running, schedule the coroutine
+                    asyncio.create_task(self._send_telegram_batch(alerts_to_send))
+                else:
+                    # If no loop is running, run it
+                    loop.run_until_complete(self._send_telegram_batch(alerts_to_send))
+            except RuntimeError:
+                # No event loop in this thread, create a new one
+                asyncio.run(self._send_telegram_batch(alerts_to_send))
+        except Exception as e:
+            logger.error(f"Failed to send Telegram batch: {e}")
+    
+    async def _send_telegram_batch(self, alerts: List[AnomalyAlert]):
+        """Send a batch of alerts to Telegram"""
+        if not self.telegram_notifier or not alerts:
+            return
+        
+        try:
+            # Send batch alerts with proper rate limiting
+            await self.telegram_notifier.send_batch_alerts(alerts)
+            logger.info(f"Sent {len(alerts)} alerts to Telegram")
+        except Exception as e:
+            logger.error(f"Failed to send Telegram batch: {e}")
+    
+    def process_pending_telegram_alerts(self):
+        """Process any pending telegram alerts (call this periodically)"""
+        if self.telegram_queue:
+            self._process_telegram_queue()
     
     async def send_startup_notification(self):
         """Send startup notification to Telegram"""

@@ -552,13 +552,16 @@ class Dashboard:
                 # Get 24h volume for volume threshold filtering
                 volume_24h = volume * 24  # Approximate 24h volume from current volume
                 
-                alert = self.anomaly_detector.add_price_data(sym, price, timestamp=datetime.now(), volume_24h=volume_24h)
+                # Estimate market cap for filtering (volume * price as rough estimate)
+                market_cap_estimate = volume_24h * price if volume_24h and price else None
+                
+                alert = self.anomaly_detector.add_price_data(sym, price, timestamp=datetime.now(), volume_24h=volume_24h, market_cap=market_cap_estimate)
                 if alert:
                     if not hasattr(self, 'thread_safe_alerts'):
                         self.thread_safe_alerts = []
                     self.thread_safe_alerts.append(alert)
 
-                alert = self.anomaly_detector.add_volume_data(sym, volume, timestamp=datetime.now(), volume_24h=volume_24h)
+                alert = self.anomaly_detector.add_volume_data(sym, volume, timestamp=datetime.now(), volume_24h=volume_24h, market_cap=market_cap_estimate)
                 if alert:
                     if not hasattr(self, 'thread_safe_alerts'):
                         self.thread_safe_alerts = []
@@ -613,6 +616,9 @@ class Dashboard:
                     st.session_state.alerts.append(alert)
             # Clear processed alerts
             self.thread_safe_alerts = []
+        
+        # Process pending telegram alerts (rate limiting)
+        self.anomaly_detector.process_pending_telegram_alerts()
 
 def main():
     """Main function to run the dashboard"""
