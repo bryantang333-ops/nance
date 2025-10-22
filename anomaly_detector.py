@@ -309,14 +309,19 @@ class AnomalyDetector:
         """Send alert to Telegram if configured"""
         if self.telegram_notifier and self.telegram_notifier.is_configured():
             try:
-                # Run the async function in a new event loop or existing one
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If loop is already running, schedule the coroutine
-                    asyncio.create_task(self.telegram_notifier.send_alert(alert))
-                else:
-                    # If no loop is running, run it
-                    loop.run_until_complete(self.telegram_notifier.send_alert(alert))
+                # Handle different thread contexts
+                try:
+                    # Try to get existing event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If loop is already running, schedule the coroutine
+                        asyncio.create_task(self.telegram_notifier.send_alert(alert))
+                    else:
+                        # If no loop is running, run it
+                        loop.run_until_complete(self.telegram_notifier.send_alert(alert))
+                except RuntimeError:
+                    # No event loop in this thread, create a new one
+                    asyncio.run(self.telegram_notifier.send_alert(alert))
             except Exception as e:
                 logger.error(f"Failed to send Telegram alert: {e}")
     
